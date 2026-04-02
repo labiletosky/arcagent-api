@@ -114,7 +114,7 @@ app.post('/task', async (req, res) => {
         response = 'Please provide an order ID. Example: "order #1"';
       }
     } else {
-      response = response = `ArcAgent is an autonomous on-chain commerce protocol on Arc Testnet. You can ask me: "list orders", "check balance", or "order #1".`;
+      response = `ArcAgent is an autonomous on-chain commerce protocol on Arc Testnet. You can ask me: "list orders", "check balance", or "order #1".`;
 ```
     }
 
