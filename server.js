@@ -84,6 +84,49 @@ app.get('/', (req, res) => {
     endpoints: ['/orders', '/orders/:id', '/balance']
   });
 });
+// POST /task - receive tasks from Arcade marketplace
+app.post('/task', async (req, res) => {
+  try {
+    const { task, sender } = req.body;
+    
+    // Parse the task
+    const taskLower = task?.toLowerCase() || '';
+    
+    let response = '';
+
+    if (taskLower.includes('orders') || taskLower.includes('list')) {
+      const count = await agent.orderCount();
+      const total = Number(count);
+      response = `ArcAgent has ${total} total orders on Arc Testnet.`;
+      
+    } else if (taskLower.includes('balance')) {
+      const balance = await agent.getBalance();
+      const formatted = ethers.formatUnits(balance, 18);
+      response = `ArcAgent contract balance is ${formatted} ART tokens.`;
+      
+    } else if (taskLower.includes('order #') || taskLower.includes('order id')) {
+      const match = task.match(/\d+/);
+      if (match) {
+        const order = await agent.getOrder(match[0]);
+        const amt = ethers.formatUnits(order.amount, 18);
+        response = `Order #${order.id}: "${order.item}" — ${amt} ART — Status: ${order.executed ? 'Executed' : 'Pending'}`;
+      } else {
+        response = 'Please provide an order ID. Example: "order #1"';
+      }
+    } else {
+      response = `ArcAgent is an on-chain commerce protocol on Arc Testnet. You can ask me: "list orders", "check balance", or "order #1". API: https://arcagent-api.onrender.com`;
+    }
+
+    res.json({ 
+      success: true, 
+      response,
+      agent: 'ArcAgent',
+      network: 'Arc Testnet'
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
