@@ -87,49 +87,43 @@ app.get('/', (req, res) => {
 // POST /task - receive tasks from Arcade marketplace
 app.post('/task', async (req, res) => {
   try {
-    const { task, sender } = req.body;
-    
-    // Parse the task
-    const taskLower = task?.toLowerCase() || '';
-    
+    const { task } = req.body;
+    const taskLower = (task || '').toLowerCase().trim();
     let response = '';
 
-    if (taskLower.includes('orders') || taskLower.includes('list')) {
+    if (taskLower.includes('balance')) {
+      const balance = await agent.getBalance();
+      const formatted = parseFloat(ethers.formatUnits(balance, 18)).toFixed(4);
+      response = `ArcAgent contract balance: ${formatted} ART tokens.`;
+
+    } else if (taskLower.includes('order') && taskLower.match(/\d+/)) {
+      const match = taskLower.match(/\d+/);
+      const order = await agent.getOrder(match[0]);
+      const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
+      response = `Order #${order.id}: "${order.item}" — Amount: ${amt} ART — Status: ${order.executed ? '✅ Executed' : '⏳ Pending'} — Buyer: ${order.buyer.slice(0,6)}...${order.buyer.slice(-4)}`;
+
+    } else if (taskLower.includes('list') || taskLower.includes('orders') || taskLower.includes('show')) {
       const count = await agent.orderCount();
       const total = Number(count);
-      response = `ArcAgent has ${total} total orders on Arc Testnet.`;
-      
-    } else if (taskLower.includes('balance')) {
-      const balance = await agent.getBalance();
-      const formatted = ethers.formatUnits(balance, 18);
-      response = `ArcAgent contract balance is ${formatted} ART tokens.`;
-      
-    } else if (taskLower.includes('order #') || taskLower.includes('order id')) {
-      const match = task.match(/\d+/);
-      if (match) {
-        const order = await agent.getOrder(match[0]);
-        const amt = ethers.formatUnits(order.amount, 18);
-        response = `Order #${order.id}: "${order.item}" — ${amt} ART — Status: ${order.executed ? 'Executed' : 'Pending'}`;
+      if (total === 0) {
+        response = `No orders yet on ArcAgent.`;
       } else {
-        response = 'Please provide an order ID. Example: "order #1"';
+        let orderList = `ArcAgent has ${total} total orders:\n`;
+        const start = Math.max(1, total - 4);
+        for (let i = total; i >= start; i--) {
+          const o = await agent.getOrder(i);
+          const amt = parseFloat(ethers.formatUnits(o.amount, 18)).toFixed(2);
+          orderList += `#${o.id} "${o.item}" — ${amt} ART — ${o.executed ? 'Executed' : 'Pending'}\n`;
+        }
+        response = orderList.trim();
       }
+
     } else {
- response = `ArcAgent is an autonomous on-chain commerce protocol on Arc Testnet. You can ask me: "list orders", "check balance", or "order #1".`;
-    
+      response = `I am ArcAgent — an autonomous on-chain commerce protocol on Arc Testnet. I can help you: check balance, list orders, or look up a specific order (e.g. "order #1"). What would you like to know?`;
     }
 
-    res.json({ 
-      success: true, 
-      response,
-      agent: 'ArcAgent',
-      network: 'Arc Testnet'
-    });
+    res.json({ success: true, response, agent: 'ArcAgent', network: 'Arc Testnet' });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`ArcAgent API running on port ${PORT}`);
 });
