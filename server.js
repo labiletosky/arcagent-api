@@ -79,7 +79,9 @@ app.get('/balance', async (req, res) => {
 // POST /task - receive tasks from Arcade marketplace
 app.post('/task', async (req, res) => {
   try {
-    const { task } = req.body;
+    const body = req.body;
+console.log('Arcade request body:', JSON.stringify(body));
+const task = body.task || body.input || body.message || body.query || Object.values(body)[0] || '';
     const t = (task || '').toLowerCase().trim();
     let response = '';
 
