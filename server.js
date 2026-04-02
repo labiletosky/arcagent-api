@@ -80,9 +80,13 @@ app.get('/balance', async (req, res) => {
 app.post('/task', async (req, res) => {
   try {
     const body = req.body;
-console.log('Arcade request body:', JSON.stringify(body));
-const task = body.task || body.input || body.message || body.query || Object.values(body)[0] || '';
-    const t = (task || '').toLowerCase().trim();
+    console.log('Incoming request body:', JSON.stringify(body));
+    
+    const task = body.task || body.input || body.message || body.query || body.prompt || body.text || '';
+    const t = task.toLowerCase().trim();
+    
+    console.log('Parsed task:', t);
+    
     let response = '';
 
     if (t.includes('balance')) {
@@ -90,14 +94,14 @@ const task = body.task || body.input || body.message || body.query || Object.val
       const formatted = parseFloat(ethers.formatUnits(balance, 18)).toFixed(4);
       response = 'ArcAgent contract balance: ' + formatted + ' ART tokens.';
 
-    } else if ((t.includes('order') || t.includes('lookup')) && t.match(/\d+/)) {
+    } else if (t.match(/\d+/) && (t.includes('order') || t.includes('lookup') || t.includes('check'))) {
       const match = t.match(/\d+/);
       const order = await agent.getOrder(Number(match[0]));
       const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
       const status = order.executed ? 'Executed' : 'Pending';
-      response = 'Order #' + order.id + ': "' + order.item + '" — ' + amt + ' ART — Status: ' + status + ' — Buyer: ' + order.buyer.slice(0,6) + '...' + order.buyer.slice(-4);
+      response = 'Order #' + order.id + ': "' + order.item + '" — ' + amt + ' ART — Status: ' + status;
 
-    } else if (t.includes('list') || t.includes('orders') || t.includes('show') || t.includes('made')) {
+    } else if (t.includes('list') || t.includes('order') || t.includes('show') || t.includes('made') || t.includes('all')) {
       const count = await agent.orderCount();
       const total = Number(count);
       if (total === 0) {
@@ -114,11 +118,16 @@ const task = body.task || body.input || body.message || body.query || Object.val
       }
 
     } else {
-      response = 'I am ArcAgent — an autonomous on-chain commerce protocol on Arc Testnet. I can help you: check balance, list orders, or look up a specific order (e.g. "order #1"). What would you like to know?';
+      const count = await agent.orderCount();
+      const balance = await agent.getBalance();
+      const total = Number(count);
+      const bal = parseFloat(ethers.formatUnits(balance, 18)).toFixed(4);
+      response = 'ArcAgent Stats:\n- Total Orders: ' + total + '\n- Contract Balance: ' + bal + ' ART\n\nAsk me: "list orders", "check balance", or "order #1"';
     }
 
     res.json({ success: true, response: response, agent: 'ArcAgent', network: 'Arc Testnet' });
   } catch (e) {
+    console.error('Task error:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
