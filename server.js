@@ -129,16 +129,31 @@ async function getOrderCountNumber() {
   return Number(count);
 }
 
-// GET all orders
+async function getAllOrders() {
+  const total = await getOrderCountNumber();
+  const orders = [];
+
+  for (let i = 1; i <= total; i++) {
+    const order = await agent.getOrder(i);
+    orders.push(formatOrder(order));
+  }
+
+  return orders;
+}
+
+async function getPendingOrders() {
+  const orders = await getAllOrders();
+  return orders.filter(order => !order.executed);
+}
+
+async function getExecutedOrders() {
+  const orders = await getAllOrders();
+  return orders.filter(order => order.executed);
+}
+
 app.get('/orders', async (req, res) => {
   try {
-    const count = await getOrderCountNumber();
-    const orders = [];
-
-    for (let i = 1; i <= count; i++) {
-      const order = await agent.getOrder(i);
-      orders.push(formatOrder(order));
-    }
+    const orders = await getAllOrders();
 
     res.json({
       success: true,
@@ -154,7 +169,6 @@ app.get('/orders', async (req, res) => {
   }
 });
 
-// GET single order
 app.get('/orders/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -190,7 +204,6 @@ app.get('/orders/:id', async (req, res) => {
   }
 });
 
-// GET contract balance
 app.get('/balance', async (req, res) => {
   try {
     const balance = await agent.getBalance();
@@ -208,7 +221,6 @@ app.get('/balance', async (req, res) => {
   }
 });
 
-// POST /task - receive tasks from Arcade marketplace
 app.post('/task', async (req, res) => {
   try {
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
@@ -229,18 +241,116 @@ app.post('/task', async (req, res) => {
 
     if (!t) {
       response =
-        'I can help with:\n' +
+        'I am a commerce and payments agent. I can help with:\n' +
         '- "check balance"\n' +
         '- "list orders"\n' +
-        '- "order #1"';
-    } else if (
+        '- "order #1"\n' +
+        '- "pending orders"\n' +
+        '- "completed orders"\n' +
+        '- "payment status for order #1"\n' +
+        '- "what can you do?"';
+    }
+
+    else if (
+      t === 'what can you do' ||
+      t === 'what can you do?' ||
+      t === 'help' ||
+      t.includes('commands')
+    ) {
+      response =
+        'I am a commerce and payments agent. I can help with:\n' +
+        '- check balance\n' +
+        '- list orders\n' +
+        '- order #1\n' +
+        '- pending orders\n' +
+        '- completed orders\n' +
+        '- payment status for order #1';
+    }
+
+    else if (
       t === 'check balance' ||
       t.includes('balance') ||
-      t.includes('contract balance')
+      t.includes('contract balance') ||
+      t.includes('payment balance')
     ) {
       const formatted = await getFormattedBalance();
-      response = `ArcAgent contract balance: ${formatted} ART tokens.`;
-    } else if (
+      response = `ArcAgent payment balance: ${formatted} ART tokens.`;
+    }
+
+    else if (
+      t.includes('pending orders') ||
+      t.includes('show pending orders') ||
+      t.includes('list pending orders') ||
+      t === 'pending'
+    ) {
+      const pendingOrders = await getPendingOrders();
+
+      if (pendingOrders.length === 0) {
+        response = 'There are no pending orders right now.';
+      } else {
+        let list = `There are ${pendingOrders.length} pending orders:\n`;
+
+        for (const order of pendingOrders.slice(-5).reverse()) {
+          const amt = parseFloat(order.amount).toFixed(2);
+          list += `#${order.id} "${order.item}" — ${amt} ART — Pending\n`;
+        }
+
+        response = list.trim();
+      }
+    }
+
+    else if (
+      t.includes('completed orders') ||
+      t.includes('executed orders') ||
+      t.includes('successful orders') ||
+      t === 'completed'
+    ) {
+      const executedOrders = await getExecutedOrders();
+
+      if (executedOrders.length === 0) {
+        response = 'There are no completed orders right now.';
+      } else {
+        let list = `There are ${executedOrders.length} completed orders:\n`;
+
+        for (const order of executedOrders.slice(-5).reverse()) {
+          const amt = parseFloat(order.amount).toFixed(2);
+          list += `#${order.id} "${order.item}" — ${amt} ART — Completed\n`;
+        }
+
+        response = list.trim();
+      }
+    }
+
+    else if (
+      t.includes('payment status for order') ||
+      t.includes('status for order') ||
+      t.includes('check payment status for order')
+    ) {
+      const match = t.match(/\d+/);
+      const orderId = match ? Number(match[0]) : null;
+
+      if (!orderId || orderId < 1) {
+        response = 'Please provide a valid order number, like "payment status for order #1".';
+      } else {
+        const count = await getOrderCountNumber();
+
+        if (orderId > count) {
+          response = `Order #${orderId} does not exist. Total orders: ${count}.`;
+        } else {
+          const order = await agent.getOrder(orderId);
+          const status = order.executed ? 'Completed' : 'Pending';
+          const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
+
+          response =
+            `Payment status for Order #${Number(order.id)}:\n` +
+            `- Item: ${order.item}\n` +
+            `- Amount: ${amt} ART\n` +
+            `- Status: ${status}`;
+        }
+      }
+    }
+
+    else if (
       /(order\s*#?\s*\d+)/i.test(t) ||
       /(lookup\s*\d+)/i.test(t) ||
       /(check\s+order\s*#?\s*\d+)/i.test(t)
@@ -257,15 +367,21 @@ app.post('/task', async (req, res) => {
           response = `Order #${orderId} does not exist. Total orders: ${count}.`;
         } else {
           const order = await agent.getOrder(orderId);
-          const amt = parseFloat(
-            ethers.formatUnits(order.amount, 18)
-          ).toFixed(2);
-          const status = order.executed ? 'Executed' : 'Pending';
+          const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
+          const status = order.executed ? 'Completed' : 'Pending';
 
-          response = `Order #${Number(order.id)}: "${order.item}" — ${amt} ART — Status: ${status}`;
+          response =
+            `Order #${Number(order.id)} details:\n` +
+            `- Item: ${order.item}\n` +
+            `- Amount: ${amt} ART\n` +
+            `- Buyer: ${order.buyer}\n` +
+            `- Status: ${status}\n` +
+            `- Time: ${new Date(Number(order.timestamp) * 1000).toISOString()}`;
         }
       }
-    } else if (
+    }
+
+    else if (
       t === 'list orders' ||
       t === 'list' ||
       t === 'orders' ||
@@ -283,39 +399,30 @@ app.post('/task', async (req, res) => {
 
         for (let i = total; i >= start; i--) {
           const o = await agent.getOrder(i);
-          const amt = parseFloat(
-            ethers.formatUnits(o.amount, 18)
-          ).toFixed(2);
-
-          list += `#${Number(o.id)} "${o.item}" — ${amt} ART — ${o.executed ? 'Executed' : 'Pending'}\n`;
+          const amt = parseFloat(ethers.formatUnits(o.amount, 18)).toFixed(2);
+          list += `#${Number(o.id)} "${o.item}" — ${amt} ART — ${o.executed ? 'Completed' : 'Pending'}\n`;
         }
 
         response = list.trim();
       }
-    } else if (
-      t === 'what can you do' ||
-      t === 'what can you do?' ||
-      t === 'help' ||
-      t.includes('commands')
-    ) {
-      response =
-        'I can help with:\n' +
-        '- "check balance"\n' +
-        '- "list orders"\n' +
-        '- "order #1"';
-    } else {
+    }
+
+    else {
       const total = await getOrderCountNumber();
       const bal = await getFormattedBalance();
 
       response =
-        `Task received: "${rawTask}"\n\n` +
-        `ArcAgent Stats:\n` +
+        `I am a commerce and payments agent.\n\n` +
+        `Current stats:\n` +
         `- Total Orders: ${total}\n` +
-        `- Contract Balance: ${bal} ART\n\n` +
+        `- Payment Balance: ${bal} ART\n\n` +
         `Try:\n` +
-        `- "check balance"\n` +
-        `- "list orders"\n` +
-        `- "order #1"`;
+        `- check balance\n` +
+        `- list orders\n` +
+        `- order #1\n` +
+        `- pending orders\n` +
+        `- completed orders\n` +
+        `- payment status for order #1`;
     }
 
     res.json({
@@ -333,11 +440,10 @@ app.post('/task', async (req, res) => {
   }
 });
 
-// Health check
 app.get('/', (req, res) => {
   res.json({
     success: true,
-    message: 'ArcAgent API is running',
+    message: 'ArcAgent Commerce & Payments API is running',
     endpoints: ['/orders', '/orders/:id', '/balance', '/task']
   });
 });
