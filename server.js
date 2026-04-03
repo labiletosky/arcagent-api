@@ -43,21 +43,52 @@ function formatOrder(order) {
 function extractTask(body) {
   if (!body) return '';
 
-  return (
-    body.task ||
-    body.input ||
-    body.message ||
-    body.query ||
-    body.prompt ||
-    body.text ||
-    body?.data?.task ||
-    body?.data?.input ||
-    body?.data?.message ||
-    body?.payload?.task ||
-    body?.payload?.input ||
-    body?.payload?.message ||
-    ''
-  );
+  if (typeof body === 'string') return body;
+
+  const possibleValues = [
+    body.task,
+    body.input,
+    body.message,
+    body.query,
+    body.prompt,
+    body.text,
+
+    body?.data?.task,
+    body?.data?.input,
+    body?.data?.message,
+    body?.data?.query,
+    body?.data?.prompt,
+    body?.data?.text,
+
+    body?.payload?.task,
+    body?.payload?.input,
+    body?.payload?.message,
+    body?.payload?.query,
+    body?.payload?.prompt,
+    body?.payload?.text,
+
+    body?.request?.task,
+    body?.request?.input,
+    body?.request?.message,
+    body?.request?.query,
+    body?.request?.prompt,
+    body?.request?.text,
+
+    body?.job?.task,
+    body?.job?.input,
+    body?.job?.message,
+    body?.job?.query,
+    body?.job?.prompt,
+    body?.job?.text
+  ];
+
+  for (const value of possibleValues) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return '';
 }
 
 async function getFormattedBalance() {
@@ -156,23 +187,27 @@ app.post('/task', async (req, res) => {
     console.log('Incoming request body:', JSON.stringify(body, null, 2));
 
     const rawTask = extractTask(body);
-    const t = String(rawTask).toLowerCase().trim();
+    let t = String(rawTask || '').toLowerCase().trim();
+
+    // fallback: if Arcade sends nothing useful, try query string too
+    if (!t && req.query && typeof req.query.task === 'string') {
+      t = req.query.task.toLowerCase().trim();
+    }
 
     console.log('Parsed task:', t);
 
-    if (!t) {
-      return res.json({
-        success: true,
-        response: 'No task received. Try: "check balance", "list orders", or "order #1".',
-        agent: 'ArcAgent',
-        network: 'Arc Testnet'
-      });
-    }
-
     let response = '';
 
+    if (!t) {
+      response =
+        'I can help with:\n' +
+        '- "check balance"\n' +
+        '- "list orders"\n' +
+        '- "order #1"';
+    }
+
     // check balance
-    if (
+    else if (
       t === 'check balance' ||
       t.includes('balance') ||
       t.includes('contract balance')
@@ -209,7 +244,7 @@ app.post('/task', async (req, res) => {
 
     // list orders
     else if (
-      t.includes('list orders') ||
+      t === 'list orders' ||
       t === 'list' ||
       t === 'orders' ||
       t.includes('show orders') ||
@@ -235,21 +270,21 @@ app.post('/task', async (req, res) => {
       }
     }
 
-    // what can you do
+    // help / what can you do
     else if (
       t === 'what can you do' ||
       t === 'what can you do?' ||
-      t.includes('help') ||
+      t === 'help' ||
       t.includes('commands')
     ) {
       response =
-        'I can help with these commands:\n' +
-        '- "list orders"\n' +
+        'I can help with:\n' +
         '- "check balance"\n' +
+        '- "list orders"\n' +
         '- "order #1"';
     }
 
-    // buy meme coin
+    // meme coin placeholder
     else if (
       t.includes('buy meme coin') ||
       t.includes('buy memecoin') ||
@@ -264,13 +299,13 @@ app.post('/task', async (req, res) => {
       const bal = await getFormattedBalance();
 
       response =
-        `Task received: "${rawTask}"\n\n` +
+        `Task received: "${rawTask || t}"\n\n` +
         `ArcAgent Stats:\n` +
         `- Total Orders: ${total}\n` +
         `- Contract Balance: ${bal} ART\n\n` +
         `Try:\n` +
-        `- "list orders"\n` +
         `- "check balance"\n` +
+        `- "list orders"\n` +
         `- "order #1"`;
     }
 
