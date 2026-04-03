@@ -53,6 +53,7 @@ function extractTask(req) {
   if (body && typeof body === 'object') {
     const possibleValues = [
       body.task,
+      body.task_text,
       body.input,
       body.message,
       body.query,
@@ -60,6 +61,7 @@ function extractTask(req) {
       body.text,
 
       body?.data?.task,
+      body?.data?.task_text,
       body?.data?.input,
       body?.data?.message,
       body?.data?.query,
@@ -67,6 +69,7 @@ function extractTask(req) {
       body?.data?.text,
 
       body?.payload?.task,
+      body?.payload?.task_text,
       body?.payload?.input,
       body?.payload?.message,
       body?.payload?.query,
@@ -74,6 +77,7 @@ function extractTask(req) {
       body?.payload?.text,
 
       body?.request?.task,
+      body?.request?.task_text,
       body?.request?.input,
       body?.request?.message,
       body?.request?.query,
@@ -81,6 +85,7 @@ function extractTask(req) {
       body?.request?.text,
 
       body?.job?.task,
+      body?.job?.task_text,
       body?.job?.input,
       body?.job?.message,
       body?.job?.query,
@@ -97,6 +102,7 @@ function extractTask(req) {
 
   const queryValues = [
     req.query?.task,
+    req.query?.task_text,
     req.query?.input,
     req.query?.message,
     req.query?.query,
@@ -123,6 +129,7 @@ async function getOrderCountNumber() {
   return Number(count);
 }
 
+// GET all orders
 app.get('/orders', async (req, res) => {
   try {
     const count = await getOrderCountNumber();
@@ -147,6 +154,7 @@ app.get('/orders', async (req, res) => {
   }
 });
 
+// GET single order
 app.get('/orders/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -182,6 +190,7 @@ app.get('/orders/:id', async (req, res) => {
   }
 });
 
+// GET contract balance
 app.get('/balance', async (req, res) => {
   try {
     const balance = await agent.getBalance();
@@ -199,10 +208,16 @@ app.get('/balance', async (req, res) => {
   }
 });
 
+// POST /task - receive tasks from Arcade marketplace
 app.post('/task', async (req, res) => {
   try {
     console.log('Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('Body:', typeof req.body === 'string' ? req.body : JSON.stringify(req.body, null, 2));
+    console.log(
+      'Body:',
+      typeof req.body === 'string'
+        ? req.body
+        : JSON.stringify(req.body, null, 2)
+    );
     console.log('Query:', JSON.stringify(req.query, null, 2));
 
     const rawTask = extractTask(req);
@@ -242,7 +257,9 @@ app.post('/task', async (req, res) => {
           response = `Order #${orderId} does not exist. Total orders: ${count}.`;
         } else {
           const order = await agent.getOrder(orderId);
-          const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
+          const amt = parseFloat(
+            ethers.formatUnits(order.amount, 18)
+          ).toFixed(2);
           const status = order.executed ? 'Executed' : 'Pending';
 
           response = `Order #${Number(order.id)}: "${order.item}" — ${amt} ART — Status: ${status}`;
@@ -266,7 +283,10 @@ app.post('/task', async (req, res) => {
 
         for (let i = total; i >= start; i--) {
           const o = await agent.getOrder(i);
-          const amt = parseFloat(ethers.formatUnits(o.amount, 18)).toFixed(2);
+          const amt = parseFloat(
+            ethers.formatUnits(o.amount, 18)
+          ).toFixed(2);
+
           list += `#${Number(o.id)} "${o.item}" — ${amt} ART — ${o.executed ? 'Executed' : 'Pending'}\n`;
         }
 
@@ -313,6 +333,7 @@ app.post('/task', async (req, res) => {
   }
 });
 
+// Health check
 app.get('/', (req, res) => {
   res.json({
     success: true,
