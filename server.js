@@ -4,8 +4,11 @@ const cors = require('cors');
 const { ethers } = require('ethers');
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.text({ type: '*/*' }));
 
 if (!process.env.RPC_URL) {
   throw new Error('Missing RPC_URL in .env');
@@ -40,49 +43,68 @@ function formatOrder(order) {
   };
 }
 
-function extractTask(body) {
-  if (!body) return '';
+function extractTask(req) {
+  const body = req.body;
 
-  if (typeof body === 'string') return body;
+  if (typeof body === 'string' && body.trim()) {
+    return body.trim();
+  }
 
-  const possibleValues = [
-    body.task,
-    body.input,
-    body.message,
-    body.query,
-    body.prompt,
-    body.text,
+  if (body && typeof body === 'object') {
+    const possibleValues = [
+      body.task,
+      body.input,
+      body.message,
+      body.query,
+      body.prompt,
+      body.text,
 
-    body?.data?.task,
-    body?.data?.input,
-    body?.data?.message,
-    body?.data?.query,
-    body?.data?.prompt,
-    body?.data?.text,
+      body?.data?.task,
+      body?.data?.input,
+      body?.data?.message,
+      body?.data?.query,
+      body?.data?.prompt,
+      body?.data?.text,
 
-    body?.payload?.task,
-    body?.payload?.input,
-    body?.payload?.message,
-    body?.payload?.query,
-    body?.payload?.prompt,
-    body?.payload?.text,
+      body?.payload?.task,
+      body?.payload?.input,
+      body?.payload?.message,
+      body?.payload?.query,
+      body?.payload?.prompt,
+      body?.payload?.text,
 
-    body?.request?.task,
-    body?.request?.input,
-    body?.request?.message,
-    body?.request?.query,
-    body?.request?.prompt,
-    body?.request?.text,
+      body?.request?.task,
+      body?.request?.input,
+      body?.request?.message,
+      body?.request?.query,
+      body?.request?.prompt,
+      body?.request?.text,
 
-    body?.job?.task,
-    body?.job?.input,
-    body?.job?.message,
-    body?.job?.query,
-    body?.job?.prompt,
-    body?.job?.text
+      body?.job?.task,
+      body?.job?.input,
+      body?.job?.message,
+      body?.job?.query,
+      body?.job?.prompt,
+      body?.job?.text
+    ];
+
+    for (const value of possibleValues) {
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+  }
+
+  const queryValues = [
+    req.query?.task,
+    req.query?.input,
+    req.query?.message,
+    req.query?.query,
+    req.query?.prompt,
+    req.query?.text
   ];
 
-  for (const value of possibleValues) {
+  for (const value of queryValues) {
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
     }
@@ -101,7 +123,6 @@ async function getOrderCountNumber() {
   return Number(count);
 }
 
-// GET all orders
 app.get('/orders', async (req, res) => {
   try {
     const count = await getOrderCountNumber();
@@ -126,7 +147,6 @@ app.get('/orders', async (req, res) => {
   }
 });
 
-// GET single order
 app.get('/orders/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -162,7 +182,6 @@ app.get('/orders/:id', async (req, res) => {
   }
 });
 
-// GET contract balance
 app.get('/balance', async (req, res) => {
   try {
     const balance = await agent.getBalance();
@@ -180,19 +199,14 @@ app.get('/balance', async (req, res) => {
   }
 });
 
-// POST /task - receive tasks from Arcade marketplace
 app.post('/task', async (req, res) => {
   try {
-    const body = req.body || {};
-    console.log('Incoming request body:', JSON.stringify(body, null, 2));
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Body:', typeof req.body === 'string' ? req.body : JSON.stringify(req.body, null, 2));
+    console.log('Query:', JSON.stringify(req.query, null, 2));
 
-    const rawTask = extractTask(body);
-    let t = String(rawTask || '').toLowerCase().trim();
-
-    // fallback: if Arcade sends nothing useful, try query string too
-    if (!t && req.query && typeof req.query.task === 'string') {
-      t = req.query.task.toLowerCase().trim();
-    }
+    const rawTask = extractTask(req);
+    const t = String(rawTask || '').toLowerCase().trim();
 
     console.log('Parsed task:', t);
 
@@ -204,20 +218,14 @@ app.post('/task', async (req, res) => {
         '- "check balance"\n' +
         '- "list orders"\n' +
         '- "order #1"';
-    }
-
-    // check balance
-    else if (
+    } else if (
       t === 'check balance' ||
       t.includes('balance') ||
       t.includes('contract balance')
     ) {
       const formatted = await getFormattedBalance();
       response = `ArcAgent contract balance: ${formatted} ART tokens.`;
-    }
-
-    // specific order lookup
-    else if (
+    } else if (
       /(order\s*#?\s*\d+)/i.test(t) ||
       /(lookup\s*\d+)/i.test(t) ||
       /(check\s+order\s*#?\s*\d+)/i.test(t)
@@ -240,10 +248,7 @@ app.post('/task', async (req, res) => {
           response = `Order #${Number(order.id)}: "${order.item}" — ${amt} ART — Status: ${status}`;
         }
       }
-    }
-
-    // list orders
-    else if (
+    } else if (
       t === 'list orders' ||
       t === 'list' ||
       t === 'orders' ||
@@ -262,16 +267,12 @@ app.post('/task', async (req, res) => {
         for (let i = total; i >= start; i--) {
           const o = await agent.getOrder(i);
           const amt = parseFloat(ethers.formatUnits(o.amount, 18)).toFixed(2);
-
           list += `#${Number(o.id)} "${o.item}" — ${amt} ART — ${o.executed ? 'Executed' : 'Pending'}\n`;
         }
 
         response = list.trim();
       }
-    }
-
-    // help / what can you do
-    else if (
+    } else if (
       t === 'what can you do' ||
       t === 'what can you do?' ||
       t === 'help' ||
@@ -282,24 +283,12 @@ app.post('/task', async (req, res) => {
         '- "check balance"\n' +
         '- "list orders"\n' +
         '- "order #1"';
-    }
-
-    // meme coin placeholder
-    else if (
-      t.includes('buy meme coin') ||
-      t.includes('buy memecoin') ||
-      t.includes('buy coin')
-    ) {
-      response = 'Buy meme coin command received, but live trading is not connected yet.';
-    }
-
-    // fallback
-    else {
+    } else {
       const total = await getOrderCountNumber();
       const bal = await getFormattedBalance();
 
       response =
-        `Task received: "${rawTask || t}"\n\n` +
+        `Task received: "${rawTask}"\n\n` +
         `ArcAgent Stats:\n` +
         `- Total Orders: ${total}\n` +
         `- Contract Balance: ${bal} ART\n\n` +
@@ -324,7 +313,6 @@ app.post('/task', async (req, res) => {
   }
 });
 
-// Health check
 app.get('/', (req, res) => {
   res.json({
     success: true,
