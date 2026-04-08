@@ -18,7 +18,14 @@ if (!process.env.AGENT_ADDRESS) {
   throw new Error('Missing AGENT_ADDRESS in .env');
 }
 
+if (!process.env.TOKEN_ADDRESS) {
+  throw new Error('Missing TOKEN_ADDRESS in .env');
+}
+
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+
+const TOKEN_SYMBOL = 'USDC';
+const TOKEN_DECIMALS = 6;
 
 const AGENT_ABI = [
   "function getOrder(uint256 orderId) view returns (tuple(uint256 id, address buyer, string item, uint256 amount, bool executed, uint256 timestamp))",
@@ -32,12 +39,17 @@ const agent = new ethers.Contract(
   provider
 );
 
+function formatTokenAmount(value) {
+  return ethers.formatUnits(value, TOKEN_DECIMALS);
+}
+
 function formatOrder(order) {
   return {
     id: Number(order.id),
     buyer: order.buyer,
     item: order.item,
-    amount: ethers.formatUnits(order.amount, 18),
+    amount: formatTokenAmount(order.amount),
+    token: TOKEN_SYMBOL,
     executed: order.executed,
     timestamp: new Date(Number(order.timestamp) * 1000).toISOString()
   };
@@ -121,7 +133,7 @@ function extractTask(req) {
 
 async function getFormattedBalance() {
   const balance = await agent.getBalance();
-  return parseFloat(ethers.formatUnits(balance, 18)).toFixed(4);
+  return parseFloat(formatTokenAmount(balance)).toFixed(4);
 }
 
 async function getOrderCountNumber() {
@@ -158,6 +170,7 @@ app.get('/orders', async (req, res) => {
     res.json({
       success: true,
       total: orders.length,
+      token: TOKEN_SYMBOL,
       orders
     });
   } catch (e) {
@@ -210,7 +223,7 @@ app.get('/balance', async (req, res) => {
 
     res.json({
       success: true,
-      balance: ethers.formatUnits(balance, 18) + ' ART'
+      balance: `${ethers.formatUnits(balance, TOKEN_DECIMALS)} ${TOKEN_SYMBOL}`
     });
   } catch (e) {
     console.error('GET /balance error:', e);
@@ -274,7 +287,7 @@ app.post('/task', async (req, res) => {
       t.includes('payment balance')
     ) {
       const formatted = await getFormattedBalance();
-      response = `ArcAgent payment balance: ${formatted} ART tokens.`;
+      response = `ArcAgent payment balance: ${formatted} ${TOKEN_SYMBOL}.`;
     }
 
     else if (
@@ -292,7 +305,7 @@ app.post('/task', async (req, res) => {
 
         for (const order of pendingOrders.slice(-5).reverse()) {
           const amt = parseFloat(order.amount).toFixed(2);
-          list += `#${order.id} "${order.item}" — ${amt} ART — Pending\n`;
+          list += `#${order.id} "${order.item}" — ${amt} ${TOKEN_SYMBOL} — Pending\n`;
         }
 
         response = list.trim();
@@ -314,7 +327,7 @@ app.post('/task', async (req, res) => {
 
         for (const order of executedOrders.slice(-5).reverse()) {
           const amt = parseFloat(order.amount).toFixed(2);
-          list += `#${order.id} "${order.item}" — ${amt} ART — Completed\n`;
+          list += `#${order.id} "${order.item}" — ${amt} ${TOKEN_SYMBOL} — Completed\n`;
         }
 
         response = list.trim();
@@ -339,12 +352,12 @@ app.post('/task', async (req, res) => {
         } else {
           const order = await agent.getOrder(orderId);
           const status = order.executed ? 'Completed' : 'Pending';
-          const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
+          const amt = parseFloat(formatTokenAmount(order.amount)).toFixed(2);
 
           response =
             `Payment status for Order #${Number(order.id)}:\n` +
             `- Item: ${order.item}\n` +
-            `- Amount: ${amt} ART\n` +
+            `- Amount: ${amt} ${TOKEN_SYMBOL}\n` +
             `- Status: ${status}`;
         }
       }
@@ -367,13 +380,13 @@ app.post('/task', async (req, res) => {
           response = `Order #${orderId} does not exist. Total orders: ${count}.`;
         } else {
           const order = await agent.getOrder(orderId);
-          const amt = parseFloat(ethers.formatUnits(order.amount, 18)).toFixed(2);
+          const amt = parseFloat(formatTokenAmount(order.amount)).toFixed(2);
           const status = order.executed ? 'Completed' : 'Pending';
 
           response =
             `Order #${Number(order.id)} details:\n` +
             `- Item: ${order.item}\n` +
-            `- Amount: ${amt} ART\n` +
+            `- Amount: ${amt} ${TOKEN_SYMBOL}\n` +
             `- Buyer: ${order.buyer}\n` +
             `- Status: ${status}\n` +
             `- Time: ${new Date(Number(order.timestamp) * 1000).toISOString()}`;
@@ -399,8 +412,8 @@ app.post('/task', async (req, res) => {
 
         for (let i = total; i >= start; i--) {
           const o = await agent.getOrder(i);
-          const amt = parseFloat(ethers.formatUnits(o.amount, 18)).toFixed(2);
-          list += `#${Number(o.id)} "${o.item}" — ${amt} ART — ${o.executed ? 'Completed' : 'Pending'}\n`;
+          const amt = parseFloat(formatTokenAmount(o.amount)).toFixed(2);
+          list += `#${Number(o.id)} "${o.item}" — ${amt} ${TOKEN_SYMBOL} — ${o.executed ? 'Completed' : 'Pending'}\n`;
         }
 
         response = list.trim();
@@ -415,7 +428,7 @@ app.post('/task', async (req, res) => {
         `I am a commerce and payments agent.\n\n` +
         `Current stats:\n` +
         `- Total Orders: ${total}\n` +
-        `- Payment Balance: ${bal} ART\n\n` +
+        `- Payment Balance: ${bal} ${TOKEN_SYMBOL}\n\n` +
         `Try:\n` +
         `- check balance\n` +
         `- list orders\n` +
@@ -429,7 +442,8 @@ app.post('/task', async (req, res) => {
       success: true,
       response,
       agent: 'ArcAgent',
-      network: 'Arc Testnet'
+      network: 'Arc Testnet',
+      token: TOKEN_SYMBOL
     });
   } catch (e) {
     console.error('Task error:', e);
@@ -444,6 +458,7 @@ app.get('/', (req, res) => {
   res.json({
     success: true,
     message: 'ArcAgent Commerce & Payments API is running',
+    token: TOKEN_SYMBOL,
     endpoints: ['/orders', '/orders/:id', '/balance', '/task']
   });
 });
