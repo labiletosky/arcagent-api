@@ -22,6 +22,10 @@ if (!process.env.TOKEN_ADDRESS) {
   throw new Error('Missing TOKEN_ADDRESS in .env');
 }
 
+if (!process.env.BIRDEYE_API_KEY) {
+  console.warn('Warning: Missing BIRDEYE_API_KEY in .env');
+}
+
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 
 const TOKEN_SYMBOL = 'USDC';
@@ -163,6 +167,10 @@ async function getExecutedOrders() {
   return orders.filter(order => order.executed);
 }
 
+/* --------------------------
+   ArcAgent existing routes
+-------------------------- */
+
 app.get('/orders', async (req, res) => {
   try {
     const orders = await getAllOrders();
@@ -233,6 +241,153 @@ app.get('/balance', async (req, res) => {
     });
   }
 });
+
+/* --------------------------
+   Birdeye routes
+-------------------------- */
+
+app.get('/birdeye/token', async (req, res) => {
+  try {
+    const { address } = req.query;
+
+    if (!process.env.BIRDEYE_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Missing BIRDEYE_API_KEY in .env'
+      });
+    }
+
+    if (!address) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token address is required'
+      });
+    }
+
+    const url = `https://public-api.birdeye.so/defi/token_overview?address=${address}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'x-api-key': process.env.BIRDEYE_API_KEY,
+        'accept': 'application/json',
+        'x-chain': process.env.BIRDEYE_CHAIN || 'solana'
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        error: data
+      });
+    }
+
+    res.json({
+      success: true,
+      source: 'birdeye',
+      chain: process.env.BIRDEYE_CHAIN || 'solana',
+      data
+    });
+  } catch (e) {
+    console.error('GET /birdeye/token error:', e);
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
+  }
+});
+
+app.get('/birdeye/summary', async (req, res) => {
+  try {
+    const { address } = req.query;
+
+    if (!process.env.BIRDEYE_API_KEY) {
+      return res.status(500).json({
+        success: false,
+        error: 'Missing BIRDEYE_API_KEY in .env'
+      });
+    }
+
+    if (!address) {
+      return res.status(400).json({
+        success: false,
+        error: 'Token address is required'
+      });
+    }
+
+    const url = `https://public-api.birdeye.so/defi/token_overview?address=${address}`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'x-api-key': process.env.BIRDEYE_API_KEY,
+        'accept': 'application/json',
+        'x-chain': process.env.BIRDEYE_CHAIN || 'solana'
+      }
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        error: result
+      });
+    }
+
+    const token = result?.data || {};
+    const price = token.price ?? 'N/A';
+    const change24h =
+      token.priceChange24hPercent ??
+      token.price_change_24h_percent ??
+      'N/A';
+    const volume24h =
+      token.v24hUSD ??
+      token.volume24hUSD ??
+      token.volume_24h_usd ??
+      'N/A';
+    const liquidity =
+      token.liquidity ??
+      token.liquidityUSD ??
+      token.liquidity_usd ??
+      'N/A';
+    const name = token.name || 'Unknown Token';
+    const symbol = token.symbol || '';
+
+    let summary = `${name} (${symbol}) is currently trading at ${price}.`;
+
+    if (change24h !== 'N/A') {
+      summary += ` 24h change: ${change24h}.`;
+    }
+
+    if (volume24h !== 'N/A') {
+      summary += ` 24h volume: ${volume24h}.`;
+    }
+
+    if (liquidity !== 'N/A') {
+      summary += ` Liquidity: ${liquidity}.`;
+    }
+
+    res.json({
+      success: true,
+      chain: process.env.BIRDEYE_CHAIN || 'solana',
+      summary,
+      raw: token
+    });
+  } catch (e) {
+    console.error('GET /birdeye/summary error:', e);
+    res.status(500).json({
+      success: false,
+      error: e.message
+    });
+  }
+});
+
+/* --------------------------
+   ArcAgent task route
+-------------------------- */
 
 app.post('/task', async (req, res) => {
   try {
@@ -459,7 +614,14 @@ app.get('/', (req, res) => {
     success: true,
     message: 'ArcAgent Commerce & Payments API is running',
     token: TOKEN_SYMBOL,
-    endpoints: ['/orders', '/orders/:id', '/balance', '/task']
+    endpoints: [
+      '/orders',
+      '/orders/:id',
+      '/balance',
+      '/task',
+      '/birdeye/token?address=...',
+      '/birdeye/summary?address=...'
+    ]
   });
 });
 
