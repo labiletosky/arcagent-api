@@ -22,10 +22,6 @@ if (!process.env.TOKEN_ADDRESS) {
   throw new Error('Missing TOKEN_ADDRESS in .env');
 }
 
-if (!process.env.BIRDEYE_API_KEY) {
-  console.warn('Warning: Missing BIRDEYE_API_KEY in .env');
-}
-
 const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
 
 const TOKEN_SYMBOL = 'USDC';
@@ -168,7 +164,7 @@ async function getExecutedOrders() {
 }
 
 /* --------------------------
-   ArcAgent existing routes
+   ArcAgent routes
 -------------------------- */
 
 app.get('/orders', async (req, res) => {
@@ -243,149 +239,6 @@ app.get('/balance', async (req, res) => {
 });
 
 /* --------------------------
-   Birdeye routes
--------------------------- */
-
-app.get('/birdeye/token', async (req, res) => {
-  try {
-    const { address } = req.query;
-
-    if (!process.env.BIRDEYE_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'Missing BIRDEYE_API_KEY in .env'
-      });
-    }
-
-    if (!address) {
-      return res.status(400).json({
-        success: false,
-        error: 'Token address is required'
-      });
-    }
-
-    const url = `https://public-api.birdeye.so/defi/token_overview?address=${address}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'x-api-key': process.env.BIRDEYE_API_KEY,
-        'accept': 'application/json',
-        'x-chain': process.env.BIRDEYE_CHAIN || 'solana'
-      }
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        success: false,
-        error: data
-      });
-    }
-
-    res.json({
-      success: true,
-      source: 'birdeye',
-      chain: process.env.BIRDEYE_CHAIN || 'solana',
-      data
-    });
-  } catch (e) {
-    console.error('GET /birdeye/token error:', e);
-    res.status(500).json({
-      success: false,
-      error: e.message
-    });
-  }
-});
-
-app.get('/birdeye/summary', async (req, res) => {
-  try {
-    const { address } = req.query;
-
-    if (!process.env.BIRDEYE_API_KEY) {
-      return res.status(500).json({
-        success: false,
-        error: 'Missing BIRDEYE_API_KEY in .env'
-      });
-    }
-
-    if (!address) {
-      return res.status(400).json({
-        success: false,
-        error: 'Token address is required'
-      });
-    }
-
-    const url = `https://public-api.birdeye.so/defi/token_overview?address=${address}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'x-api-key': process.env.BIRDEYE_API_KEY,
-        'accept': 'application/json',
-        'x-chain': process.env.BIRDEYE_CHAIN || 'solana'
-      }
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        success: false,
-        error: result
-      });
-    }
-
-    const token = result?.data || {};
-    const price = token.price ?? 'N/A';
-    const change24h =
-      token.priceChange24hPercent ??
-      token.price_change_24h_percent ??
-      'N/A';
-    const volume24h =
-      token.v24hUSD ??
-      token.volume24hUSD ??
-      token.volume_24h_usd ??
-      'N/A';
-    const liquidity =
-      token.liquidity ??
-      token.liquidityUSD ??
-      token.liquidity_usd ??
-      'N/A';
-    const name = token.name || 'Unknown Token';
-    const symbol = token.symbol || '';
-
-    let summary = `${name} (${symbol}) is currently trading at ${price}.`;
-
-    if (change24h !== 'N/A') {
-      summary += ` 24h change: ${change24h}.`;
-    }
-
-    if (volume24h !== 'N/A') {
-      summary += ` 24h volume: ${volume24h}.`;
-    }
-
-    if (liquidity !== 'N/A') {
-      summary += ` Liquidity: ${liquidity}.`;
-    }
-
-    res.json({
-      success: true,
-      chain: process.env.BIRDEYE_CHAIN || 'solana',
-      summary,
-      raw: token
-    });
-  } catch (e) {
-    console.error('GET /birdeye/summary error:', e);
-    res.status(500).json({
-      success: false,
-      error: e.message
-    });
-  }
-});
-
-/* --------------------------
    ArcAgent task route
 -------------------------- */
 
@@ -417,9 +270,7 @@ app.post('/task', async (req, res) => {
         '- "completed orders"\n' +
         '- "payment status for order #1"\n' +
         '- "what can you do?"';
-    }
-
-    else if (
+    } else if (
       t === 'what can you do' ||
       t === 'what can you do?' ||
       t === 'help' ||
@@ -433,9 +284,7 @@ app.post('/task', async (req, res) => {
         '- pending orders\n' +
         '- completed orders\n' +
         '- payment status for order #1';
-    }
-
-    else if (
+    } else if (
       t === 'check balance' ||
       t.includes('balance') ||
       t.includes('contract balance') ||
@@ -443,9 +292,7 @@ app.post('/task', async (req, res) => {
     ) {
       const formatted = await getFormattedBalance();
       response = `ArcAgent payment balance: ${formatted} ${TOKEN_SYMBOL}.`;
-    }
-
-    else if (
+    } else if (
       t.includes('pending orders') ||
       t.includes('show pending orders') ||
       t.includes('list pending orders') ||
@@ -465,9 +312,7 @@ app.post('/task', async (req, res) => {
 
         response = list.trim();
       }
-    }
-
-    else if (
+    } else if (
       t.includes('completed orders') ||
       t.includes('executed orders') ||
       t.includes('successful orders') ||
@@ -487,9 +332,7 @@ app.post('/task', async (req, res) => {
 
         response = list.trim();
       }
-    }
-
-    else if (
+    } else if (
       t.includes('payment status for order') ||
       t.includes('status for order') ||
       t.includes('check payment status for order')
@@ -516,9 +359,7 @@ app.post('/task', async (req, res) => {
             `- Status: ${status}`;
         }
       }
-    }
-
-    else if (
+    } else if (
       /(order\s*#?\s*\d+)/i.test(t) ||
       /(lookup\s*\d+)/i.test(t) ||
       /(check\s+order\s*#?\s*\d+)/i.test(t)
@@ -547,9 +388,7 @@ app.post('/task', async (req, res) => {
             `- Time: ${new Date(Number(order.timestamp) * 1000).toISOString()}`;
         }
       }
-    }
-
-    else if (
+    } else if (
       t === 'list orders' ||
       t === 'list' ||
       t === 'orders' ||
@@ -573,9 +412,7 @@ app.post('/task', async (req, res) => {
 
         response = list.trim();
       }
-    }
-
-    else {
+    } else {
       const total = await getOrderCountNumber();
       const bal = await getFormattedBalance();
 
@@ -618,9 +455,7 @@ app.get('/', (req, res) => {
       '/orders',
       '/orders/:id',
       '/balance',
-      '/task',
-      '/birdeye/token?address=...',
-      '/birdeye/summary?address=...'
+      '/task'
     ]
   });
 });
