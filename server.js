@@ -459,6 +459,29 @@ app.get('/', (req, res) => {
     ]
   });
 });
+// GET stats - fast summary
+app.get('/stats', async (req, res) => {
+  try {
+    const count = await agent.orderCount()
+    const total = Number(count)
+    let executed = 0
+    let pending = 0
+    let totalUsdc = 0
+    const start = Math.max(1, total - 50)
+    for (let i = start; i <= total; i++) {
+      const o = await agent.getOrder(i)
+      if (o.executed) {
+        executed++
+        totalUsdc += parseFloat(ethers.formatUnits(o.amount, 6))
+      } else if (!o.refunded) {
+        pending++
+      }
+    }
+    res.json({ success: true, total, executed, pending, totalUsdc: totalUsdc.toFixed(2) })
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message })
+  }
+})
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function () {
