@@ -28,7 +28,7 @@ const TOKEN_SYMBOL = 'USDC';
 const TOKEN_DECIMALS = 6;
 
 const AGENT_ABI = [
-  "function getOrder(uint256 orderId) view returns (tuple(uint256 id, address buyer, string item, uint256 amount, bool executed, uint256 timestamp))",
+  "function getOrder(uint256 orderId) view returns (tuple(uint256 id, address buyer, address receiver, string item, uint256 amount, bool executed, bool refunded, uint256 timestamp, uint256 deadline))",
   "function orderCount() view returns (uint256)",
   "function getBalance() view returns (uint256)"
 ];
