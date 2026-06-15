@@ -2,11 +2,24 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { ethers } = require('ethers');
+const { createGatewayMiddleware } = require('@circle-fin/x402-batching/server');
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// ── x402 Payment Middleware ───────────────────────────────────
+const SELLER_WALLET = process.env.SELLER_WALLET || '0x5a52ed2527159b61f6c44e64a50922635b5b2a5a'
+
+const gateway = createGatewayMiddleware({
+  sellerAddress: SELLER_WALLET,
+  facilitatorUrl: 'https://gateway-api-testnet.circle.com',
+  networks: ['eip155:5042002']
+})
+
+// ── x402 paid route wrappers ─────────────────────────────────
+const requirePayment = (price) => gateway.require(price)
 app.use(express.urlencoded({ extended: true }));
 app.use(express.text({ type: '*/*' }));
 
@@ -109,7 +122,7 @@ async function getFormattedBalance() {
 
 /* ── Routes ── */
 
-app.get('/orders', async (req, res) => {
+app.get('/orders', requirePayment('$0.001'), async (req, res) => {
   try {
     const orders = await getAllOrders();
     res.json({ success: true, total: orders.length, token: TOKEN_SYMBOL, orders });
@@ -141,7 +154,7 @@ app.get('/balance', async (req, res) => {
 });
 
 // ── Stats — cached for 60s, scans ALL orders in parallel ─────
-app.get('/stats', async (req, res) => {
+app.get('/stats', requirePayment('$0.0001'), async (req, res) => {
   try {
     const now = Date.now()
 
@@ -184,7 +197,7 @@ app.get('/stats', async (req, res) => {
   }
 })
 
-app.post('/task', async (req, res) => {
+app.post('/task', requirePayment('$0.005'), async (req, res) => {
   try {
     const rawTask = extractTask(req);
     const t = String(rawTask || '').toLowerCase().trim();
