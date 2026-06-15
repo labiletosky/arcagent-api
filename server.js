@@ -154,7 +154,7 @@ app.get('/balance', async (req, res) => {
 });
 
 // ── Stats — cached for 60s, scans ALL orders in parallel ─────
-app.get('/stats', requirePayment('$0.0001'), async (req, res) => {
+app.get('/stats', async (req, res) => {
   try {
     const now = Date.now()
 
