@@ -300,6 +300,137 @@ app.get('/', (req, res) => {
   });
 });
 
+// ── AI Order Verification ──────────────────────────────────────
+// Reviews a pending order using Claude and returns an advisory
+// verdict: "execute", "hold", or "refund" — plus reasoning.
+// IMPORTANT: this endpoint does NOT call executeOrder/claimRefund
+// itself. It only returns advice. The actual onchain action still
+// requires the agent wallet, exactly as before, using the existing
+// deployed contract (no new functions, no redeploy).
+app.post('/verify-order/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({ success: false, error: 'Invalid order ID' });
+    }
+
+    const count = await getOrderCountNumber();
+    if (id > count) {
+      return res.status(404).json({ success: false, error: `Order #${id} does not exist` });
+    }
+
+    const order = await agent.getOrder(id);
+    const formatted = formatOrder(order);
+
+    if (formatted.executed) {
+      return res.json({ success: true, verdict: 'already_executed', order: formatted });
+    }
+    if (formatted.refunded) {
+      return res.json({ success: true, verdict: 'already_refunded', order: formatted });
+    }
+
+    const evidence = typeof req.body?.evidence === 'string' ? req.body.evidence : '';
+    const useRealAI = !!process.env.ANTHROPIC_API_KEY;
+
+    let verdictObj;
+
+    if (useRealAI) {
+      // ── Real Claude call (used once ANTHROPIC_API_KEY is funded) ──
+      const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-5-20250929',
+          max_tokens: 400,
+          system:
+            'You are ArcAgent\'s neutral order-verification agent. You review a single ' +
+            'commerce order on Arc Testnet and decide whether the agent should execute ' +
+            'the payment release, hold it for more information, or recommend a refund. ' +
+            'Respond ONLY with valid JSON, no markdown, no commentary outside the JSON. ' +
+            'Schema: {"verdict": "execute" | "hold" | "refund", "confidence": 0-1, "reason": "short string"}',
+          messages: [{
+            role: 'user',
+            content:
+              'Order #' + formatted.id + '\n' +
+              'Item description: ' + formatted.item + '\n' +
+              'Amount: ' + formatted.amount + ' USDC\n' +
+              'Buyer: ' + formatted.buyer + '\n' +
+              'Placed at: ' + formatted.timestamp + '\n' +
+              (evidence ? ('Delivery evidence provided by seller: ' + evidence + '\n') : 'No delivery evidence provided.\n') +
+              'Decide the verdict.'
+          }]
+        })
+      });
+
+      if (!claudeRes.ok) {
+        const errText = await claudeRes.text();
+        throw new Error('Claude API error: ' + errText.slice(0, 300));
+      }
+
+      const claudeData = await claudeRes.json();
+      const rawText = claudeData?.content?.[0]?.text || '';
+
+      try {
+        verdictObj = JSON.parse(rawText);
+      } catch (e) {
+        throw new Error('Could not parse Claude response as JSON: ' + rawText.slice(0, 200));
+      }
+
+    } else {
+      // ── Deterministic mock verdict (no API key required) ──
+      // Uses simple, transparent rules on the real onchain order data.
+      // Swap in the real Claude call above once ANTHROPIC_API_KEY is funded.
+      const amt = parseFloat(formatted.amount);
+      const hasEvidence = evidence.trim().length > 0;
+      const itemLooksReal = formatted.item && formatted.item.replace(/\[.*?\]/g, '').trim().length >= 3;
+
+      if (!itemLooksReal) {
+        verdictObj = {
+          verdict: 'hold',
+          confidence: 0.55,
+          reason: 'Item description is too short or unclear to confirm what was ordered.'
+        };
+      } else if (amt > 100 && !hasEvidence) {
+        verdictObj = {
+          verdict: 'hold',
+          confidence: 0.6,
+          reason: 'High-value order with no delivery evidence provided yet — recommend requesting proof before release.'
+        };
+      } else if (hasEvidence) {
+        verdictObj = {
+          verdict: 'execute',
+          confidence: 0.8,
+          reason: 'Delivery evidence provided and order details are consistent — safe to release payment.'
+        };
+      } else {
+        verdictObj = {
+          verdict: 'execute',
+          confidence: 0.65,
+          reason: 'Standard low-to-moderate value order with no red flags in the item or amount.'
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      order: formatted,
+      verdict: verdictObj.verdict,
+      confidence: verdictObj.confidence,
+      reason: verdictObj.reason,
+      poweredBy: useRealAI ? 'claude' : 'mock-rules (no ANTHROPIC_API_KEY set — add one to enable real Claude verdicts)',
+      note: 'This is an advisory verdict only. No onchain action was taken by this endpoint.'
+    });
+
+  } catch (e) {
+    console.error('verify-order error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, function () {
   console.log('ArcAgent API running on port ' + PORT);
