@@ -164,19 +164,35 @@ app.get('/stats', async (req, res) => {
     }
 
     const total = await getOrderCountNumber()
-    const BATCH = 20
+    const BATCH = 10  // smaller batches — more reliable on rate-limited public RPCs
     const ids = []
     for (let i = 1; i <= total; i++) ids.push(i)
 
     let executed = 0
     let pending = 0
     let totalUsdc = 0
+    let failedIds = []
+
+    // Fetch one order with a few retries before giving up on it.
+    async function getOrderWithRetry(id, attempts = 3) {
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+          return await agent.getOrder(id)
+        } catch (e) {
+          if (attempt === attempts) throw e
+          await new Promise(r => setTimeout(r, 200 * attempt))
+        }
+      }
+    }
 
     for (let b = 0; b < ids.length; b += BATCH) {
       const batch = ids.slice(b, b + BATCH)
-      const results = await Promise.allSettled(batch.map(i => agent.getOrder(i)))
-      for (const r of results) {
-        if (r.status !== 'fulfilled') continue
+      const results = await Promise.allSettled(batch.map(i => getOrderWithRetry(i)))
+      results.forEach((r, idx) => {
+        if (r.status !== 'fulfilled') {
+          failedIds.push(batch[idx])
+          return
+        }
         const o = r.value
         if (o.executed) {
           executed++
@@ -184,11 +200,24 @@ app.get('/stats', async (req, res) => {
         } else if (!o.refunded) {
           pending++
         }
-      }
+      })
+      // Small delay between batches to avoid RPC rate-limiting
+      if (b + BATCH < ids.length) await new Promise(r => setTimeout(r, 50))
+    }
+
+    if (failedIds.length > 0) {
+      console.error('stats: failed to fetch ' + failedIds.length + ' orders after retries:', failedIds.slice(0, 20))
     }
 
     // Save to cache
-    statsCache = { success: true, total, executed, pending, totalUsdc: totalUsdc.toFixed(2) }
+    statsCache = {
+      success: true,
+      total,
+      executed,
+      pending,
+      totalUsdc: totalUsdc.toFixed(2),
+      failedToFetch: failedIds.length
+    }
     statsCacheTime = now
 
     res.json({ ...statsCache, cached: false })
