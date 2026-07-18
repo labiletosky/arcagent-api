@@ -27,7 +27,16 @@ if (!process.env.RPC_URL) throw new Error('Missing RPC_URL in .env');
 if (!process.env.AGENT_ADDRESS) throw new Error('Missing AGENT_ADDRESS in .env');
 if (!process.env.TOKEN_ADDRESS) throw new Error('Missing TOKEN_ADDRESS in .env');
 
-const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+// staticNetwork stops ethers from calling eth_chainId before every
+// single request — this redundant call was silently doubling our
+// actual load on Arc's rate-limited public testnet RPC. Same fix
+// already confirmed working in bot.js and main.js.
+const ARC_TESTNET_CHAIN_ID = 5042002;
+const provider = new ethers.JsonRpcProvider(
+  process.env.RPC_URL,
+  ARC_TESTNET_CHAIN_ID,
+  { staticNetwork: true }
+);
 const TOKEN_SYMBOL = 'USDC';
 const TOKEN_DECIMALS = 6;
 
@@ -79,10 +88,6 @@ function extractTask(req) {
 }
 
 // ── Stats cache (60 second TTL) ──────────────────────────────
-let statsCache = null
-let statsCacheTime = 0
-const CACHE_TTL = 60 * 1000 // 60 seconds
-
 async function getOrderCountNumber() {
   const count = await agent.orderCount();
   return Number(count);
@@ -154,75 +159,26 @@ app.get('/balance', async (req, res) => {
 });
 
 // ── Stats — cached for 60s, scans ALL orders in parallel ─────
+// Doing a live, synchronous scan of every order on every /stats
+// request was reliably failing — even carefully throttled, 500 orders
+// takes well over 2 minutes to check safely on Arc's rate-limited
+// public RPC, far past any realistic serverless function timeout.
+// The real fix: the GitHub Actions bot (which already scans every
+// order on a schedule, with a generous 4-minute budget) computes
+// these numbers and publishes them to a Cloudflare Worker's KV store.
+// This endpoint just reads that instantly — no RPC calls, no timeout
+// risk, ever. Stats update roughly every time the bot completes a
+// full pass through all orders (which may take a few scheduled runs
+// for very large order counts).
+const STATS_WORKER_URL = process.env.STATS_WORKER_URL || 'https://arcagent-circle-proxy.arcagent.workers.dev/stats'
+
 app.get('/stats', async (req, res) => {
   try {
-    const now = Date.now()
-
-    // Return cached result if still fresh
-    if (statsCache && (now - statsCacheTime) < CACHE_TTL) {
-      return res.json({ ...statsCache, cached: true })
-    }
-
-    const total = await getOrderCountNumber()
-    const BATCH = 10  // smaller batches — more reliable on rate-limited public RPCs
-    const ids = []
-    for (let i = 1; i <= total; i++) ids.push(i)
-
-    let executed = 0
-    let pending = 0
-    let totalUsdc = 0
-    let failedIds = []
-
-    // Fetch one order with a few retries before giving up on it.
-    async function getOrderWithRetry(id, attempts = 3) {
-      for (let attempt = 1; attempt <= attempts; attempt++) {
-        try {
-          return await agent.getOrder(id)
-        } catch (e) {
-          if (attempt === attempts) throw e
-          await new Promise(r => setTimeout(r, 200 * attempt))
-        }
-      }
-    }
-
-    for (let b = 0; b < ids.length; b += BATCH) {
-      const batch = ids.slice(b, b + BATCH)
-      const results = await Promise.allSettled(batch.map(i => getOrderWithRetry(i)))
-      results.forEach((r, idx) => {
-        if (r.status !== 'fulfilled') {
-          failedIds.push(batch[idx])
-          return
-        }
-        const o = r.value
-        if (o.executed) {
-          executed++
-          totalUsdc += parseFloat(ethers.formatUnits(o.amount, 6))
-        } else if (!o.refunded) {
-          pending++
-        }
-      })
-      // Small delay between batches to avoid RPC rate-limiting
-      if (b + BATCH < ids.length) await new Promise(r => setTimeout(r, 50))
-    }
-
-    if (failedIds.length > 0) {
-      console.error('stats: failed to fetch ' + failedIds.length + ' orders after retries:', failedIds.slice(0, 20))
-    }
-
-    // Save to cache
-    statsCache = {
-      success: true,
-      total,
-      executed,
-      pending,
-      totalUsdc: totalUsdc.toFixed(2),
-      failedToFetch: failedIds.length
-    }
-    statsCacheTime = now
-
-    res.json({ ...statsCache, cached: false })
+    const response = await fetch(STATS_WORKER_URL)
+    const data = await response.json()
+    res.json(data)
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message })
+    res.status(500).json({ success: false, error: 'Could not reach stats source: ' + e.message })
   }
 })
 
@@ -336,6 +292,11 @@ app.get('/', (req, res) => {
 // itself. It only returns advice. The actual onchain action still
 // requires the agent wallet, exactly as before, using the existing
 // deployed contract (no new functions, no redeploy).
+// ── Order verification — spam filter only ──────────────────────
+// ArcAgent's real job: execute every genuine order, skip spam/junk.
+// There is no "refund" verdict here — refunds are the buyer's own
+// claimRefund() path after the deadline, not something this agent
+// decides. This endpoint only ever returns "execute" or "hold".
 app.post('/verify-order/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -358,9 +319,7 @@ app.post('/verify-order/:id', async (req, res) => {
       return res.json({ success: true, verdict: 'already_refunded', order: formatted });
     }
 
-    const evidence = typeof req.body?.evidence === 'string' ? req.body.evidence : '';
     const useRealAI = !!process.env.ANTHROPIC_API_KEY;
-
     let verdictObj;
 
     if (useRealAI) {
@@ -374,23 +333,24 @@ app.post('/verify-order/:id', async (req, res) => {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-5-20250929',
-          max_tokens: 400,
+          max_tokens: 300,
           system:
-            'You are ArcAgent\'s neutral order-verification agent. You review a single ' +
-            'commerce order on Arc Testnet and decide whether the agent should execute ' +
-            'the payment release, hold it for more information, or recommend a refund. ' +
+            'You are ArcAgent\'s spam filter. ArcAgent\'s job is to execute every ' +
+            'genuine commerce order — your only task is to flag orders that look like ' +
+            'spam, test junk, or gibberish so the agent holds them instead of wasting ' +
+            'gas executing nonsense. You do NOT decide refunds — that is the buyer\'s ' +
+            'own separate claimRefund() path, never yours to recommend. ' +
             'Respond ONLY with valid JSON, no markdown, no commentary outside the JSON. ' +
-            'Schema: {"verdict": "execute" | "hold" | "refund", "confidence": 0-1, "reason": "short string"}',
+            'Schema: {"verdict": "execute" | "hold", "confidence": 0-1, "reason": "short string"}',
           messages: [{
             role: 'user',
             content:
               'Order #' + formatted.id + '\n' +
-              'Item description: ' + formatted.item + '\n' +
+              'Item description: "' + formatted.item + '"\n' +
               'Amount: ' + formatted.amount + ' USDC\n' +
               'Buyer: ' + formatted.buyer + '\n' +
-              'Placed at: ' + formatted.timestamp + '\n' +
-              (evidence ? ('Delivery evidence provided by seller: ' + evidence + '\n') : 'No delivery evidence provided.\n') +
-              'Decide the verdict.'
+              'Placed at: ' + formatted.timestamp + '\n\n' +
+              'Is this a genuine order (execute) or spam/junk/gibberish (hold)?'
           }]
         })
       });
@@ -410,36 +370,30 @@ app.post('/verify-order/:id', async (req, res) => {
       }
 
     } else {
-      // ── Deterministic mock verdict (no API key required) ──
-      // Uses simple, transparent rules on the real onchain order data.
+      // ── Deterministic spam-detection rules (no API key required) ──
       // Swap in the real Claude call above once ANTHROPIC_API_KEY is funded.
+      // Default is ALWAYS execute — hold only triggers on clear junk signals.
+      const itemRaw = (formatted.item || '').replace(/\[.*?\]/g, '').trim();
       const amt = parseFloat(formatted.amount);
-      const hasEvidence = evidence.trim().length > 0;
-      const itemLooksReal = formatted.item && formatted.item.replace(/\[.*?\]/g, '').trim().length >= 3;
 
-      if (!itemLooksReal) {
-        verdictObj = {
-          verdict: 'hold',
-          confidence: 0.55,
-          reason: 'Item description is too short or unclear to confirm what was ordered.'
-        };
-      } else if (amt > 100 && !hasEvidence) {
-        verdictObj = {
-          verdict: 'hold',
-          confidence: 0.6,
-          reason: 'High-value order with no delivery evidence provided yet — recommend requesting proof before release.'
-        };
-      } else if (hasEvidence) {
-        verdictObj = {
-          verdict: 'execute',
-          confidence: 0.8,
-          reason: 'Delivery evidence provided and order details are consistent — safe to release payment.'
-        };
+      const isTooShort = itemRaw.length < 2;
+      const isZeroOrInvalidAmount = !(amt > 0);
+      // Repeated single character only, e.g. "aaaa" or "....." — common junk pattern
+      const isRepeatedCharSpam = itemRaw.length > 0 && /^(.)\1+$/.test(itemRaw);
+
+      if (isTooShort || isZeroOrInvalidAmount || isRepeatedCharSpam) {
+        let reason = 'Order amount is zero or invalid.';
+        if (isTooShort) reason = 'Item description is empty or too short to be a real order.';
+        else if (isRepeatedCharSpam) reason = 'Item description looks like junk (repeated characters), not a real item.';
+
+        verdictObj = { verdict: 'hold', confidence: 0.7, reason };
       } else {
+        // Default: treat as genuine and execute. ArcAgent's job is to
+        // execute orders, not to invent reasons to withhold them.
         verdictObj = {
           verdict: 'execute',
-          confidence: 0.65,
-          reason: 'Standard low-to-moderate value order with no red flags in the item or amount.'
+          confidence: 0.75,
+          reason: 'Order has a valid item description and a positive amount — no spam signals detected.'
         };
       }
     }
@@ -451,7 +405,7 @@ app.post('/verify-order/:id', async (req, res) => {
       confidence: verdictObj.confidence,
       reason: verdictObj.reason,
       poweredBy: useRealAI ? 'claude' : 'mock-rules (no ANTHROPIC_API_KEY set — add one to enable real Claude verdicts)',
-      note: 'This is an advisory verdict only. No onchain action was taken by this endpoint.'
+      note: 'This endpoint only flags execute vs hold (spam check). Refunds are never decided here — that is the buyer\'s own claimRefund() path after the deadline.'
     });
 
   } catch (e) {
